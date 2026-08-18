@@ -1270,6 +1270,28 @@ static void ggml_backend_cuda_host_buffer_free_buffer(ggml_backend_buffer_t buff
     CUDA_CHECK(cudaFreeHost(buffer->context));
 }
 
+// Pinned host allocations are all-or-nothing: a single failed cudaMallocHost silently
+// degrades the entire buffer to pageable memory. Cap the per-buffer size so that
+// ggml_backend_alloc_ctx_tensors_from_buft splits large weight sets into chunks; then only
+// the chunks that cannot be pinned fall back, instead of every tensor in the context.
+// Note: a single tensor larger than this cap still gets its own (oversized) buffer.
+static size_t ggml_backend_cuda_host_buffer_type_get_max_size(ggml_backend_buffer_type_t buft) {
+    GGML_UNUSED(buft);
+
+    static size_t max_size = []() -> size_t {
+        const char * val = getenv("GGML_CUDA_HOST_MAX_BUFFER_SIZE_MB");
+        if (val != nullptr) {
+            const size_t mb = (size_t) strtoull(val, nullptr, 10);
+            if (mb > 0) {
+                return mb * 1024 * 1024;
+            }
+        }
+        return (size_t) 8 * 1024 * 1024 * 1024; // 8 GiB
+    }();
+
+    return max_size;
+}
+
 static void * ggml_cuda_host_malloc(size_t size) {
     if (getenv("GGML_CUDA_NO_PINNED") != nullptr) {
         return nullptr;
@@ -1309,7 +1331,7 @@ ggml_backend_buffer_type_t ggml_backend_cuda_host_buffer_type() {
             /* .get_name         = */ ggml_backend_cuda_host_buffer_type_name,
             /* .alloc_buffer     = */ ggml_backend_cuda_host_buffer_type_alloc_buffer,
             /* .get_alignment    = */ ggml_backend_cpu_buffer_type()->iface.get_alignment,
-            /* .get_max_size     = */ NULL, // defaults to SIZE_MAX
+            /* .get_max_size     = */ ggml_backend_cuda_host_buffer_type_get_max_size,
             /* .get_alloc_size   = */ ggml_backend_cpu_buffer_type()->iface.get_alloc_size,
             /* .is_host          = */ ggml_backend_cpu_buffer_type()->iface.is_host,
         },

@@ -1636,10 +1636,17 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             if (buf == nullptr) {
                 throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));
             }
-            if (use_mlock && ggml_backend_buffer_is_host(buf)) {
+            // a multi_buffer (produced when the buft caps the per-buffer size) has no defined
+            // base pointer, so it cannot be mlocked as a single range
+            void * mlock_base = use_mlock ? ggml_backend_buffer_get_base(buf) : nullptr;
+            if (use_mlock && ggml_backend_buffer_is_host(buf) && mlock_base == nullptr) {
+                LLAMA_LOG_WARN("%s: cannot mlock %s buffer: allocated as multiple chunks\n",
+                        __func__, ggml_backend_buft_name(buft));
+            }
+            if (use_mlock && ggml_backend_buffer_is_host(buf) && mlock_base != nullptr) {
                 pimpl->mlock_bufs.emplace_back(new llama_mlock);
                 auto & mlock_buf = pimpl->mlock_bufs.back();
-                mlock_buf->init   (ggml_backend_buffer_get_base(buf));
+                mlock_buf->init   (mlock_base);
                 mlock_buf->grow_to(ggml_backend_buffer_get_size(buf));
             }
             bufs.emplace_back(buf);
